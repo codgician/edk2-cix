@@ -1,0 +1,78 @@
+name: "Build Orion O6 firmware"
+"on":
+  push:
+    branches:
+    - "sky1"
+    tags:
+    - "v*"
+  pull_request:
+    branches:
+    - "sky1"
+  workflow_dispatch: {}
+permissions: {}
+concurrency:
+  cancel-in-progress: true
+  group: "${{ github.workflow }}-${{ github.ref }}"
+jobs:
+  build:
+    name: "Build and test"
+    # The vendor packaging tools are AArch64 Linux binaries.
+    runs-on: "ubuntu-24.04-arm"
+    timeout-minutes: 120
+    permissions:
+      contents: "read"
+    env:
+      # The nixpkgs revision codgician/nur-packages builds edk2-cix-codgician with.
+      NIX_PATH: "nixpkgs=https://github.com/NixOS/nixpkgs/archive/1c89083e451e891152365b799595cf7790a43325.tar.gz"
+    steps:
+    - name: "Checkout"
+      uses: "actions/checkout@v7"
+      with:
+        submodules: "recursive"
+    - name: "Install Nix"
+      uses: "cachix/install-nix-action@v31"
+    - name: "Build"
+      working-directory: "src"
+      run: |
+        nix-shell ../shell.nix --run 'make DSC=edk2-platforms/Platform/Radxa/Orion/O6/O6.dsc Build/O6/RELEASE_GCC5/cix_flash_ota.bin Build/O6/RELEASE_GCC5/cix_flash_all.bin'
+    - name: "Run host tests"
+      working-directory: "src"
+      run: |
+        nix-shell edk2-platforms/Platform/CIX/Sky1/Test/HostTest/shell.nix --run '
+          cmake -S edk2-platforms/Platform/CIX/Sky1/Test/HostTest -B Build/HostTest -G Ninja &&
+          cmake --build Build/HostTest &&
+          ctest --test-dir Build/HostTest --output-on-failure -j "$(nproc)"'
+    - name: "Collect firmware"
+      run: |
+        out=src/Build/O6/RELEASE_GCC5
+        mkdir -p firmware
+        cp "$out"/cix_flash_ota.bin "$out"/cix_flash_all.bin "$out"/BuildOptions "$out"/FV/FVMAIN.Fv firmware/
+        cp "$out"/FV/FVMAIN_COMPACT.Fv firmware/SKY1_BL33_UEFI.fd
+        (cd firmware && sha256sum -- * > SHA256SUMS)
+    - name: "Upload firmware"
+      uses: "actions/upload-artifact@v7"
+      with:
+        if-no-files-found: "error"
+        name: "orion-o6-firmware"
+        path: "firmware/"
+  release:
+    if: "startsWith(github.ref, 'refs/tags/v')"
+    name: "Release"
+    needs: "build"
+    runs-on: "ubuntu-latest"
+    timeout-minutes: 10
+    permissions:
+      contents: "write"
+    steps:
+    - name: "Download firmware"
+      uses: "actions/download-artifact@v8"
+      with:
+        name: "orion-o6-firmware"
+        path: "firmware"
+    - name: "Release"
+      uses: "softprops/action-gh-release@v3"
+      with:
+        fail_on_unmatched_files: true
+        files: "firmware/*"
+        generate_release_notes: true
+        token: "${{ secrets.GITHUB_TOKEN }}"
