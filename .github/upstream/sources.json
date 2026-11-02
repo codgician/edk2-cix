@@ -1,0 +1,75 @@
+{
+  "fork_ignore": ["HEAD", "main", "master", "cix_*", "radxa_*", "vendor/*"],
+  "sources": [
+    {
+      "id": "radxa-edk2-platforms",
+      "kind": "vendor-branches",
+      "repo": "radxa/edk2-platforms",
+      "url": "https://github.com/radxa/edk2-platforms.git",
+      "branches": "cix_p1_dev_*",
+      "cache": "edk2-platforms",
+      "submodule": "src/edk2-platforms",
+      "fork_url": "https://github.com/codgician/edk2-platforms.git",
+      "triage": true
+    },
+    {
+      "id": "radxa-edk2-non-osi",
+      "kind": "vendor-branches",
+      "repo": "radxa/edk2-non-osi",
+      "url": "https://github.com/radxa/edk2-non-osi.git",
+      "branches": "cix_p1_dev_*",
+      "cache": "edk2-non-osi",
+      "submodule": "src/edk2-non-osi",
+      "fork_url": "https://github.com/radxa/edk2-non-osi.git",
+      "triage": true
+    },
+    {
+      "id": "radxa-edk2",
+      "kind": "vendor-branches",
+      "repo": "radxa/edk2",
+      "url": "https://github.com/radxa/edk2.git",
+      "branches": "cix_p1_dev_*",
+      "cache": "edk2",
+      "submodule": "src/edk2",
+      "fork_url": "https://github.com/codgician/edk2.git",
+      "triage": true
+    },
+    {
+      "id": "radxa-pkg-edk2-cix",
+      "kind": "release-tags",
+      "repo": "radxa-pkg/edk2-cix",
+      "url": "https://github.com/radxa-pkg/edk2-cix.git",
+      "tags": "[0-9]*",
+      "cache": "edk2-cix",
+      "fork_url": "https://github.com/codgician/edk2-cix.git",
+      "seed_seen_through": "1.3.1",
+      "triage": true
+    },
+    {
+      "id": "tianocore-edk2",
+      "kind": "stable-tags",
+      "repo": "tianocore/edk2",
+      "url": "https://github.com/tianocore/edk2.git",
+      "tags": "edk2-stable*",
+      "cache": "edk2",
+      "submodule": "src/edk2",
+      "fork_url": "https://github.com/codgician/edk2.git",
+      "base_tag": "edk2-stable202502",
+      "seed_seen_through": "edk2-stable202511",
+      "advisories": "tianocore/edk2",
+      "triage": true
+    },
+    {
+      "id": "neol00-edk2-cix-unlocked",
+      "kind": "idea-branch",
+      "repo": "Neol00/edk2-cix-unlocked",
+      "url": "https://github.com/Neol00/edk2-cix-unlocked.git",
+      "branches": "main",
+      "cache": "edk2-cix-unlocked",
+      "interval_days": 28,
+      "seed_tip": "28cb8dd471",
+      "note": "GPL-3.0 at its root: an idea source only. Never copy its code; reimplement from specifications, upstream tianocore or our own reasoning.",
+      "triage": false
+    }
+  ]
+}
