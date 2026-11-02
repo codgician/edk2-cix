@@ -1,0 +1,120 @@
+name: "Triage upstream commits"
+"on":
+  workflow_call:
+    secrets:
+      DENDRO_API_KEY:
+        required: true
+permissions: {}
+jobs:
+  analyze:
+    name: "Classify with Pi"
+    runs-on: "ubuntu-latest"
+    timeout-minutes: 90
+    # The agent reads untrusted upstream text: no write token, no other secrets.
+    permissions:
+      contents: "read"
+    env:
+      NIXPKGS: "github:NixOS/nixpkgs/1c89083e451e891152365b799595cf7790a43325"
+      # Keep the checkout pristine for the scope check.
+      PYTHONDONTWRITEBYTECODE: "1"
+    steps:
+    - name: "Checkout"
+      uses: "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1" # v7
+      with:
+        persist-credentials: false
+        ref: "sky1"
+        submodules: true
+    - name: "Download report"
+      uses: "actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333" # v8.0.2
+      with:
+        name: "upstream-report"
+        path: "${{ runner.temp }}/out"
+    - name: "Install Nix"
+      uses: "cachix/install-nix-action@75c75c31ebece974e48ebc36b4ad125bd97bd97b" # v31
+    - name: "Assemble prompt"
+      run: |
+        printf '\n.ai-state/\n' >> .git/info/exclude
+        python3 .github/scripts/triage.py prompt --evidence "$RUNNER_TEMP/out/triage" --state .ai-state
+    - name: "Check agent guard"
+      run: |
+        nix shell "$NIXPKGS#pi-coding-agent" -c .github/scripts/run_pi_agent.sh --check
+    - name: "Classify"
+      env:
+        DENDRO_API_KEY: "${{ secrets.DENDRO_API_KEY }}"
+      run: |
+        nix shell "$NIXPKGS#pi-coding-agent" -c .github/scripts/run_pi_agent.sh .ai-state/prompt.md
+    - name: "Check scope"
+      run: |
+        changed=$(git status --porcelain --untracked-files=all --ignore-submodules=none)
+        if [[ -n "$changed" ]]; then
+          echo "The agent changed repository files:" >&2
+          printf '%s\n' "$changed" >&2
+          exit 1
+        fi
+        mkdir -p "$RUNNER_TEMP/result"
+        if [[ -f .ai-state/result/triage.json && ! -L .ai-state/result/triage.json ]]; then
+          head -c 1048576 .ai-state/result/triage.json > "$RUNNER_TEMP/result/triage.json"
+        else
+          echo '{}' > "$RUNNER_TEMP/result/triage.json"
+        fi
+    - name: "Upload result"
+      uses: "actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9" # v7.0.2
+      with:
+        if-no-files-found: "error"
+        name: "upstream-triage"
+        path: "${{ runner.temp }}/result"
+        retention-days: 30
+  comment:
+    name: "Post triage"
+    needs: "analyze"
+    runs-on: "ubuntu-latest"
+    timeout-minutes: 10
+    permissions:
+      contents: "read"
+      # Post the validated triage comment.
+      issues: "write"
+    steps:
+    - name: "Checkout"
+      uses: "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1" # v7
+      with:
+        persist-credentials: false
+        ref: "sky1"
+    - name: "Download report"
+      uses: "actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333" # v8.0.2
+      with:
+        name: "upstream-report"
+        path: "${{ runner.temp }}/out"
+    - name: "Download issue numbers"
+      uses: "actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333" # v8.0.2
+      with:
+        name: "upstream-issues"
+        path: "${{ runner.temp }}/issues"
+    - name: "Download result"
+      uses: "actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333" # v8.0.2
+      with:
+        name: "upstream-triage"
+        path: "${{ runner.temp }}/result"
+    - name: "Validate and render"
+      run: |
+        python3 .github/scripts/triage.py render \
+          --evidence "$RUNNER_TEMP/out/triage" \
+          --result "$RUNNER_TEMP/result/triage.json" \
+          --issues "$RUNNER_TEMP/issues/issues.json" \
+          --out "$RUNNER_TEMP/comments"
+    - name: "Post comments"
+      env:
+        GH_TOKEN: "${{ github.token }}"
+        REPOSITORY: "${{ github.repository }}"
+      run: |
+        shopt -s nullglob
+        for comment in "$RUNNER_TEMP"/comments/*.md; do
+          number=$(basename "$comment" .md)
+          [[ "$number" =~ ^[1-9][0-9]*$ ]] || continue
+          marker=$(head -n 1 "$comment")
+          if gh api --paginate "repos/$REPOSITORY/issues/$number/comments" --jq '.[].body' | grep -qxF -- "$marker"; then
+            echo "#$number already has this triage"
+            continue
+          fi
+          gh api "repos/$REPOSITORY/issues/$number/comments" -F "body=@$comment" > /dev/null
+          echo "Posted triage to #$number"
+        done

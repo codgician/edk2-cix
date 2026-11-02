@@ -1,0 +1,15 @@
+{
+  "providers": {
+    "dendro": {
+      "baseUrl": "https://dendro.codgician.me/v1",
+      "api": "openai-responses",
+      "apiKey": "$DENDRO_API_KEY",
+      "models": [
+        {
+          "id": "gpt-6-luna",
+          "reasoning": true
+        }
+      ]
+    }
+  }
+}
