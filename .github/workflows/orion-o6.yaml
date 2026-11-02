@@ -38,6 +38,8 @@ jobs:
     - name: "Run host tests"
       working-directory: "src"
       run: |
+        # The command runs inside nix-shell; $(nproc) expands there.
+        # shellcheck disable=SC2016
         nix-shell edk2-platforms/Platform/CIX/Sky1/Test/HostTest/shell.nix --run '
           cmake -S edk2-platforms/Platform/CIX/Sky1/Test/HostTest -B Build/HostTest -G Ninja &&
           cmake --build Build/HostTest &&

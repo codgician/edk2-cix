@@ -43,6 +43,38 @@ that also records the PCR0 value a healthy boot produces, use
 only with a way back: Radxa's official image with `FlashUpdate.efi`, or an SPI
 programmer.
 
+### Comparing builds
+
+`scripts/firmware.nix` builds that NUR package from committed revisions of
+this repository and its submodules and keeps every module image, link map and
+FV report; `scripts/fvdiff.py` compares two such builds module by module:
+
+```sh
+nix build --impure -f scripts/firmware.nix --argstr edk2 <rev> \
+  --argstr platforms <rev> firmware -o base
+scripts/fvdiff.py base head
+```
+
+Pull requests to `sky1` build base and head this way. The "Firmware gate"
+workflow posts the comparison and a hardware checklist for the changed modules
+(`.github/pr-gate/checklist.json`); it never merges.
+
+### Upstream tracking
+
+The "Watch upstreams" workflow checks daily the Radxa vendor trees
+(`cix_p1_dev_*` branches of edk2-platforms, edk2-non-osi and edk2), the
+radxa-pkg/edk2-cix release tags, new tianocore `edk2-stable*` tags and
+tianocore's security advisories, and monthly Neol00/edk2-cix-unlocked as an
+idea source (GPL-3.0: never copy its code). Each new range opens or updates one
+issue labelled `upstream` with the commits, the files that overlap our own
+changes or our FV (`.github/upstream/fv-sources.json`) and matching advisories.
+The last-seen state lives on the `upstream-state` branch. When the repository
+variable `UPSTREAM_TRIAGE` is `true`, a read-only Pi agent classifies the new
+commits against `.github/upstream/policy.md` and a separate job posts the
+validated result. Sources are configured in `.github/upstream/sources.json`;
+run the check locally with
+`.github/scripts/upstream_watch.py check --dry-run --wrapper . --cache /tmp/upstream --out /tmp/upstream/out`.
+
 ## Upstream
 
 [![Release](https://github.com/radxa-pkg/edk2-cix/actions/workflows/release.yaml/badge.svg)](https://github.com/radxa-pkg/edk2-cix/actions/workflows/release.yaml)
