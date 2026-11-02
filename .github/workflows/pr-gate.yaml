@@ -1,0 +1,140 @@
+name: "Firmware gate"
+"on":
+  pull_request:
+    branches:
+    - "sky1"
+permissions: {}
+concurrency:
+  cancel-in-progress: true
+  group: "${{ github.workflow }}-${{ github.event.pull_request.number }}"
+jobs:
+  compare:
+    name: "Build base and head, compare"
+    # The vendor packaging tools are AArch64 Linux binaries.
+    runs-on: "ubuntu-24.04-arm"
+    timeout-minutes: 180
+    permissions:
+      contents: "read"
+    env:
+      BASE_SHA: "${{ github.event.pull_request.base.sha }}"
+      PR_NUMBER: "${{ github.event.pull_request.number }}"
+    steps:
+    - name: "Checkout"
+      uses: "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1" # v7
+      with:
+        fetch-depth: 0
+        persist-credentials: false
+        submodules: "recursive"
+    - name: "Install Nix"
+      uses: "cachix/install-nix-action@75c75c31ebece974e48ebc36b4ad125bd97bd97b" # v31
+      with:
+        extra_nix_config: |
+          experimental-features = nix-command flakes
+    - name: "Resolve revisions"
+      run: |
+        mkdir -p "$RUNNER_TEMP/gate"
+        nur=$(git ls-remote https://github.com/codgician/nur-packages.git refs/heads/main | cut -f1)
+        head=$(git rev-parse HEAD)
+        pins() {
+          printf '{"edk2": "%s", "edk2-platforms": "%s", "edk2-non-osi": "%s", "wrapper": "%s"}' \
+            "$(git rev-parse "$1:src/edk2")" "$(git rev-parse "$1:src/edk2-platforms")" \
+            "$(git rev-parse "$1:src/edk2-non-osi")" "$(git rev-parse "$1")"
+        }
+        printf '{"nur": "%s", "base": %s, "head": %s}\n' "$nur" "$(pins "$BASE_SHA")" "$(pins "$head")" \
+          > "$RUNNER_TEMP/gate/pins.json"
+        cat "$RUNNER_TEMP/gate/pins.json"
+        # The base pins may not be ancestors of the head pins; keep both under
+        # refs so builtins.fetchGit (allRefs) finds them.
+        for repo in edk2 edk2-platforms edk2-non-osi; do
+          for side in "$BASE_SHA" "$head"; do
+            rev=$(git rev-parse "$side:src/$repo")
+            git -C "src/$repo" cat-file -e "$rev^{commit}" 2>/dev/null || git -C "src/$repo" fetch --quiet origin "$rev"
+            git -C "src/$repo" update-ref "refs/gate/$rev" "$rev"
+          done
+        done
+        git update-ref refs/gate/base "$BASE_SHA"
+        git update-ref refs/gate/head "$head"
+        build() {
+          jq -r --arg side "$1" '.nur as $nur | .[$side] |
+            "--argstr nur github:codgician/nur-packages/\($nur) --argstr wrapper \(.wrapper) --argstr edk2 \(.edk2) --argstr platforms \(.["edk2-platforms"]) --argstr nonOsi \(.["edk2-non-osi"])"' \
+            "$RUNNER_TEMP/gate/pins.json" | xargs nix build --impure -f scripts/firmware.nix \
+              --argstr root "$GITHUB_WORKSPACE" --option accept-flake-config true \
+              -o "$RUNNER_TEMP/gate/$1" firmware
+        }
+        build base
+        build head
+    - name: "Compare"
+      run: |
+        set +e
+        python3 scripts/fvdiff.py --json "$RUNNER_TEMP/gate/fvdiff.json" \
+          "$RUNNER_TEMP/gate/base" "$RUNNER_TEMP/gate/head" > "$RUNNER_TEMP/gate/fvdiff.txt"
+        status=$?
+        set -e
+        [[ "$status" -le 1 ]]
+        python3 scripts/fv_sources.py "$RUNNER_TEMP/gate/head" > "$RUNNER_TEMP/gate/fv-sources.json"
+        mkdir -p "$RUNNER_TEMP/report"
+        python3 .github/scripts/pr_gate.py \
+          --fvdiff "$RUNNER_TEMP/gate/fvdiff.json" \
+          --fvdiff-text "$RUNNER_TEMP/gate/fvdiff.txt" \
+          --pins "$RUNNER_TEMP/gate/pins.json" \
+          --fv-sources-head "$RUNNER_TEMP/gate/fv-sources.json" \
+          > "$RUNNER_TEMP/report/report.md"
+        printf '%s\n' "$PR_NUMBER" > "$RUNNER_TEMP/report/number"
+        cat "$RUNNER_TEMP/report/report.md" >> "$GITHUB_STEP_SUMMARY"
+    - name: "Upload report"
+      uses: "actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9" # v7.0.2
+      with:
+        if-no-files-found: "error"
+        name: "firmware-gate"
+        path: "${{ runner.temp }}/report"
+  comment:
+    name: "Post report"
+    needs: "compare"
+    # Pull requests from forks get a read-only token; their report stays in the run summary.
+    if: "github.event.pull_request.head.repo.full_name == github.repository"
+    runs-on: "ubuntu-latest"
+    timeout-minutes: 10
+    permissions:
+      # Create or update the gate comment.
+      pull-requests: "write"
+    steps:
+    - name: "Download report"
+      uses: "actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333" # v8.0.2
+      with:
+        name: "firmware-gate"
+        path: "${{ runner.temp }}/report"
+    - name: "Create or update comment"
+      uses: "actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3" # v9
+      env:
+        PR_NUMBER: "${{ github.event.pull_request.number }}"
+        REPORT: "${{ runner.temp }}/report/report.md"
+      with:
+        script: |
+          const fs = require("node:fs");
+          const marker = "<!-- pr-gate -->";
+          let body = fs.readFileSync(process.env.REPORT, "utf8");
+          if (!body.startsWith(marker)) throw new Error("Unexpected report format");
+          if (body.length > 65000) body = `${body.slice(0, 65000)}\n\n… truncated; see the run summary.`;
+          const issue_number = Number(process.env.PR_NUMBER);
+          const comments = await github.paginate(github.rest.issues.listComments, {
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            issue_number,
+            per_page: 100,
+          });
+          const existing = comments.find((c) => c.user?.type === "Bot" && c.body?.startsWith(marker));
+          if (existing) {
+            await github.rest.issues.updateComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              comment_id: existing.id,
+              body,
+            });
+          } else {
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number,
+              body,
+            });
+          }

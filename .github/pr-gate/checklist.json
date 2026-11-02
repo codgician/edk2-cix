@@ -1,0 +1,135 @@
+{
+  "comment": "Hardware checks for the pull-request gate. A rule applies when a module or FFS file matching one of its `match` globs changed beyond the stack cookie, was added or removed, or changed its DEPEX; `when` rules apply on fvdiff conditions. Commands run on the Orion O6 after flashing the head build.",
+  "always": {
+    "title": "Every flash",
+    "checks": [
+      "Before flashing: have Radxa's official image with `FlashUpdate.efi` or an SPI programmer ready to restore the previous firmware.",
+      "Cold boot (power removed) and warm reboot reach the OS: `journalctl -b -p err --no-pager` shows no new firmware-related errors compared with the previous image."
+    ]
+  },
+  "when": [
+    {
+      "id": "pcr0",
+      "if": "pcr0_changed",
+      "title": "PCR0 prediction",
+      "checks": [
+        "`cat /sys/class/tpm/tpm0/pcr-sha256/0` equals the head build's predicted value (case-insensitive): `{pcr0_sha256}`.",
+        "Update anything that seals to PCR0 (disk unlock policies) before rebooting into the new image."
+      ]
+    },
+    {
+      "id": "structure",
+      "if": "structure_changed",
+      "title": "FV file set, order or DEPEX changed",
+      "checks": [
+        "Explain every added, removed or reordered FFS file and DEPEX change in the pull request.",
+        "Firmware setup opens (Esc at the logo) and the boot manager lists the expected entries."
+      ]
+    },
+    {
+      "id": "capacity",
+      "if": "compact_changed",
+      "title": "FV capacity",
+      "checks": [
+        "FVMAIN_COMPACT has {compact_free} bytes free (base {compact_free_base}); the FD stays 0x1f0000. Below 16 KiB free, plan space before taking more upstream code."
+      ]
+    }
+  ],
+  "rules": [
+    {
+      "id": "measured-boot",
+      "match": ["Tcg2Dxe", "Tcg2ConfigDxe", "FTPMDxe", "FirmwareMeasureDxe", "TPMVariableDxe", "DxeCore", "BdsDxe", "SecurityStubDxe", "HashLib*", "Tpm2*"],
+      "title": "Measured boot, TPM gate and physical presence",
+      "checks": [
+        "`cat /sys/class/tpm/tpm0/pcr-sha256/0` equals the predicted PCR0 of the head build.",
+        "Event log replays: `nix shell nixpkgs#tpm2-tools -c sudo tpm2_eventlog /sys/kernel/security/tpm0/binary_bios_measurements | tail -n 30` lists PCR0 with the FVMAIN measurement before the separator, and its computed PCR0 matches the value above.",
+        "`dmesg | grep -i tpm` shows the firmware TPM probed without errors and `ls /dev/tpm0 /dev/tpmrm0` exist.",
+        "TPM boot gate: the board still refuses to boot to the OS when the TPM is unavailable (if you can provoke it safely), and boots normally otherwise.",
+        "Physical presence: in firmware setup, TCG2 configuration, request a TPM clear, reboot; the prompt appears and only F12 confirms. Press Esc to reject and check the TPM was not cleared (`cat /sys/class/tpm/tpm0/pcr-sha256/7` unchanged, sealed secrets still unseal)."
+      ]
+    },
+    {
+      "id": "boot-options",
+      "match": ["BdsDxe", "UiApp", "BootManagerPolicyDxe", "PlatformDxe", "ConfigParamsManageDxe", "PlatformConfigDxe", "PlatformConfigParamsManageDxe", "PlatformSetupVariableInitDxe", "RadxaSetupVariableInitDxe", "SetupBrowser", "DisplayEngine", "HiiDatabase", "SystemInfoDxe", "CixSmbiosDxe", "PlatformSmbios", "SmbiosDxe", "ProcessorSubClass"],
+      "title": "Setup, boot options and setup variables",
+      "checks": [
+        "Firmware setup opens, saves and keeps settings across a reboot; boot order is unchanged.",
+        "Setup variables stay NV|BS: compare `ls /sys/firmware/efi/efivars` before and after flashing; no new platform setup variable appears (runtime-visible variables would)."
+      ]
+    },
+    {
+      "id": "usb",
+      "match": ["XhciDxe", "UsbBusDxe", "UsbKbDxe", "UsbMouseDxe", "UsbMassStorageDxe", "EhciDxe", "UhciDxe", "Usb*HostDxe", "UsbCHostDxe", "TypecPhyDxe", "PdDxe", "NonDiscoverablePciDeviceDxe"],
+      "title": "USB",
+      "checks": [
+        "Cold boot (power removed) and warm reboot: the keyboard works in firmware setup and the boot menu on every port you use.",
+        "After each boot `lsusb -t` lists the same devices as before flashing; `dmesg | grep -iE 'xhci|usb .*(error|fail)'` shows no new errors.",
+        "Boot from a USB stick from the boot manager."
+      ]
+    },
+    {
+      "id": "pcie",
+      "match": ["PciBusDxe", "PciHostBridgeDxe", "PcieInitDxe", "ArmPciCpuIo2Dxe", "NvmExpressDxe", "AtaAtapiPassThruDxe", "AtaBusDxe", "SataController", "RealtekLanDxe", "RtkUndiDxe", "X86EmulatorDxe"],
+      "title": "PCIe and storage",
+      "checks": [
+        "`lspci -tv` matches the tree from before flashing; the NVMe boot disk is found by the firmware and the OS.",
+        "`dmesg | grep -iE 'pcie|aer'` shows no new link or AER errors."
+      ]
+    },
+    {
+      "id": "acpi",
+      "match": ["SocAcpiTables", "PlatformAcpiTables", "AcpiPlatform", "AcpiPlatformDxe", "AcpiSocDxe", "AcpiTableDxe", "DynamicTable*", "ConfigurationManagerDxe", "DtPlatformDxe", "DtbUpdateDxe", "DeviceTree"],
+      "title": "ACPI tables",
+      "checks": [
+        "`sudo dmesg | grep -iE 'ACPI (BIOS )?(Error|Warning)|AE_[A-Z_]+|firmware bug'` shows nothing new.",
+        "`ls /sys/firmware/acpi/tables` lists the same tables as before; `nix shell nixpkgs#acpica-tools -c sudo acpidump -b` then `iasl -d dsdt.dat` disassembles cleanly.",
+        "SMMU policy unchanged: `dmesg | grep -i smmu` and `ls /sys/kernel/iommu_groups | wc -l` match the previous image for the selected SMMU setting; ACPI remains the default boot description.",
+        "Devices described by ACPI still bind: `lspci`, network, audio and `ls /sys/bus/platform/devices | wc -l` unchanged."
+      ]
+    },
+    {
+      "id": "early-boot",
+      "match": ["ArmPlatformPrePiUniCore", "FwVersionDxe", "MemConfigUpdateDxe", "TrustZoneConfigUpdateDxe", "SeConfigUpdateDxe", "ClockDxe", "PowerDxe", "PowerButtonDxe", "EcPlatformDxe", "SocDxe", "ResetDxe", "ResetSystemRuntimeDxe", "RealTimeClock", "ArmCpuDxe", "ArmGicDxe", "ArmTimerDxe", "GenericWatchdogDxe", "ArmScmiDxe"],
+      "title": "Early boot, clocks and reset",
+      "checks": [
+        "Have the SPI programmer connected or at hand: a fault here can stop the board before the boot menu.",
+        "Serial console shows PrePi and DXE start; `reboot` and `poweroff` work; RTC time survives a power cycle (`timedatectl`)."
+      ]
+    },
+    {
+      "id": "flash",
+      "match": ["SpiDxe", "NorFlashStmmRuntimeDxe", "VariableSmmRuntimeDxe", "CixFirmwareUpdateDxe", "FirmwareConfigUpdateDxe", "CapsuleRuntimeDxe", "EsrtDxe", "SystemFirmwareReportDxe", "ArmMmCommunication"],
+      "title": "Flash and variables",
+      "checks": [
+        "Confirm no new SPI flash writer was added (review the diff of the module).",
+        "UEFI variables persist: `sudo efibootmgr -v` before and after a reboot; `efivar -l | wc -l` sane.",
+        "Raw FlashUpdate recovery still works with Radxa's official image (only when you can afford the reflash)."
+      ]
+    },
+    {
+      "id": "secure-boot",
+      "match": ["SecureBootConfigDxe", "SecureBootDefaultKeysDxe", "SecureBootDxe", "Hash2DxeCrypto", "RngDxe", "EnrollFromDefaultKeysApp"],
+      "title": "Secure Boot and crypto",
+      "checks": [
+        "`mokutil --sb-state` reports the expected state; `efi-readvar` lists the expected PK/KEK/db.",
+        "Signed boot chain still boots with Secure Boot enabled (if used)."
+      ]
+    },
+    {
+      "id": "display",
+      "match": ["DpuDxe", "LcdGraphicsOutputDxe", "GraphicsConsoleDxe", "LogoDxe", "ConSplitterDxe", "ConPlatformDxe", "TerminalDxe", "SerialDxe"],
+      "title": "Display and consoles",
+      "checks": [
+        "Logo and firmware setup appear on the monitor you use (HDMI/DP) and on the serial console."
+      ]
+    },
+    {
+      "id": "network",
+      "match": ["*Ip4Dxe", "*Ip6Dxe", "TcpDxe", "Udp*Dxe", "Dhcp*Dxe", "DnsDxe", "Http*", "Mtftp*Dxe", "PxeBcDxe", "MnpDxe", "SnpDxe", "ArpDxe", "VlanConfigDxe"],
+      "title": "Network boot",
+      "checks": [
+        "If you use network boot: PXE/HTTP boot entries appear and fetch a test image; otherwise confirm the OS network works."
+      ]
+    }
+  ]
+}
