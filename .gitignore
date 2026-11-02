@@ -22,3 +22,6 @@
 
 # intel-corporation.edk2code extension file
 /.edkCode
+
+# Python bytecode
+__pycache__/
